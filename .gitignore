@@ -1,0 +1,20 @@
+# data, weights and results (downloaded or generated locally)
+data/bridgenet/
+data/synthetic/
+data/downloads/
+weights/*.pth
+outputs/
+
+# python / jupyter
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,8 @@
+{
+  "description": "BridgeNet release assets. Each zip holds train/<id>/<id>_render/... or test/<id>/<id>_render/... folders. Update 'tag' and 'files' after uploading the dataset to a GitHub release.",
+  "tag": "bridgenet-v1",
+  "files": [
+    {"name": "bridgenet_test.zip", "split": "test"},
+    {"name": "bridgenet_train.zip", "split": "train"}
+  ]
+}

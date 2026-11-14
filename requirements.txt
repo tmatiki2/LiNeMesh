@@ -1,0 +1,25 @@
+# LiNeMesh: Python dependencies (tested with Python 3.10 / 3.11)
+# For GPU training, install the CUDA build of PyTorch first, following
+# https://pytorch.org/get-started/locally/ , then run:  pip install -r requirements.txt
+
+# deep learning
+torch>=2.1
+torchvision>=0.16
+
+# numerics, geometry, images
+numpy>=1.24,<2.0
+scipy>=1.10
+opencv-python>=4.8
+pillow>=10.0
+matplotlib>=3.7
+
+# mesh / point-cloud evaluation and visualisation (01_LM_mesh_viz.py)
+open3d>=0.18
+
+# training notebook (01_train_LiNeMesh.ipynb)
+jupyter
+ipython
+
+# Synthetic data (01_LM_synthetic_data.py) runs inside Blender (>= 4.2), not in this environment.
+# Its extra packages (trimesh, scipy, rtree) go into Blender's Python:
+#   blender -b --factory-startup -P scripts/install_blender_deps.py
