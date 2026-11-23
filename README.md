@@ -2,7 +2,7 @@
 
 **Analysis mesh generation from images and structural line diagrams**
 
-LiNeMesh generates analysis-ready meshes of civil structures directly from field images (UAV or handheld photos) and a structural line diagram (LD). The LD may be metric (from CAD/BIM) or schematic (from field inspection). It provides the global geometric reference, so no per-image camera pose estimation is needed. The output mesh can use any user-specified element size and element type.
+LiNeMesh generates the analysis mesh (the discretized analysis domain) of civil structures for finite element analysis (FEA) from multi-view images (UAV or handheld photos, or renders of a CAD/BIM model) and a structural line diagram (LD). It classifies the elements of a user-prescribed coarse hexahedral mesh as occupied or empty. The LD provides the spatial reference, so no per-image camera pose estimation is needed, and the element size is set by the user. The mesh is metric when the LD is metric (from CAD/BIM or a few field measurements); with a schematic LD it is defined in the LD frame. Materials, boundary conditions and loads are defined afterwards in the FE software.
 
 ![LiNeMesh graphical abstract](assets/graphical_abstract.png)
 
@@ -28,15 +28,16 @@ LiNeMesh generates analysis-ready meshes of civil structures directly from field
 ```
 LiNeMesh/
 ├── 01_train_LiNeMesh.ipynb       # training notebook
-├── 01_LM_mesh_viz.py             # evaluation: mesh generation, metrics, visualisation
+├── 01_LM_mesh_viz.py             # evaluation: mesh generation, FE mesh export, metrics, visualisation
 ├── 01_LM_synthetic_data.py       # synthetic data generation from a user-defined LD (Blender)
 ├── LM_models.py                  # LiNeMesh network
-├── LM_utils.py                   # canonical cameras, projection, mesh and metric utilities
+├── LM_utils.py                   # canonical cameras, projection, FE mesh assembly/export, metrics
 ├── LM_paths.py                   # all paths and download locations (relative to the repo)
 ├── requirements.txt
 ├── scripts/
 │   ├── download_bridgenet.py     # downloads and unpacks BridgeNet into data/bridgenet/
 │   ├── download_weights.py       # downloads the pretrained model into weights/
+│   ├── mesh_from_points.py       # saved (N*9, 3) output -> FE mesh (.vtk/.inp) and metrics
 │   └── install_blender_deps.py   # installs trimesh/scipy/rtree into Blender's Python
 ├── data/
 │   └── bridgenet_manifest.json   # list of dataset archives (GitHub release assets)
@@ -130,12 +131,35 @@ python 01_LM_mesh_viz.py
 ```
 
 The script:
-1. picks a BridgeNet test domain (one of those reported in the paper);
-2. builds a coarse mesh around the LD with a prescribed element size;
+1. picks a BridgeNet test domain (the five reported in the paper, 05015, 05209, 05311, 05328 and 05384, or one of the additional test examples);
+2. builds a coarse hexahedral mesh around the LD with a prescribed element size;
 3. renders the canonical LD views and combines them with the field images;
-4. keeps the elements predicted as occupied;
-5. reports precision, completeness, F1 and accuracy against the ground-truth point cloud at τ = 0.05 and τ = 0.10;
-6. opens an Open3D window and saves the result to `outputs/linemesh_<id>.ply`.
+4. keeps the elements predicted as occupied, with their occupancy confidence;
+5. assembles the FE mesh: unique nodes (coincident nodes closer than 10⁻⁴ m merged) and 8-node hexahedral connectivity, and reports its number of nodes, elements, connected components and boundary faces;
+6. reports the metrics of the paper against the ground-truth point cloud at τ = 0.05 and τ = 0.10 m;
+7. saves the mesh to `outputs/` and shows its boundary faces coloured by occupancy confidence in an Open3D window.
+
+**Metrics** (computed on the unique mesh points, as in the paper):
+
+| Metric | Definition |
+|---|---|
+| Precision *P* | fraction of mesh points within τ of the reference |
+| Recall *R* | fraction of reference points within τ of the mesh (completeness) |
+| *F*1 | 2*PR* / (*P* + *R*) |
+| Accuracy *A* | mean distance from the mesh points to the reference |
+| IoU | volumetric intersection-over-union of the occupied voxels of edge τ (enclosed interiors filled) |
+| *V*/*V*ref | ratio of the occupied volumes (1 is ideal; > 1 excess, < 1 missing material) |
+
+**Outputs** (`outputs/`):
+
+| File | Content |
+|---|---|
+| `linemesh_<id>.vtk` | hexahedral mesh with the occupancy confidence of each element (open in ParaView) |
+| `linemesh_<id>.inp` | the same mesh as Abaqus C3D8 elements (nodes and elements only) |
+| `linemesh_<id>_nodes.npy`, `linemesh_<id>_elements.npy` | unique nodes `(M, 3)` and connectivity `(K, 8)` (VTK / C3D8 vertex order) |
+| `linemesh_<id>_mesh_points.npy` | raw output `(N*9, 3)`: centroid and 8 corners of each occupied element |
+
+The candidate cubes evaluated by the network may overlap; the FE mesh rebuilds each occupied element as a cube of the coarse-mesh size about its centroid, so neighbouring elements share faces (a conforming mesh).
 
 Options:
 
@@ -147,11 +171,27 @@ Options:
 | `--weights FILE` | `weights/mod_brdgnet_ptrain.pth` | model weights |
 | `--no-vis` | off | do not open a window (servers / SSH); results are still saved |
 | `--seed N` | none | random seed for reproducible view selection |
+| `--wireframe` | off | also draw the element edges |
 
 Example:
 
 ```bash
-python 01_LM_mesh_viz.py --sample 5040 --mesh-size 0.05 --no-vis
+python 01_LM_mesh_viz.py --sample 5015 --mesh-size 0.05 --no-vis
+```
+
+**Converting a saved output.** Any `(N*9, 3)` LiNeMesh output can be converted to an FE mesh, and evaluated against a reference point cloud, with:
+
+```bash
+python scripts/mesh_from_points.py outputs/linemesh_05015_mesh_points.npy --ref reference.npy --tau 0.05 0.10
+```
+
+or from Python:
+
+```python
+from LM_utils import points_to_fe_mesh, save_fe_mesh, unique_points, pointcloud_metrics
+nodes, elements, keep, info = points_to_fe_mesh(points, tol=1e-4, element_size="auto", return_info=True)
+save_fe_mesh("mesh.vtk", nodes, elements)                      # or "mesh.inp"
+m = pointcloud_metrics(unique_points(points), reference, threshold=0.05)
 ```
 
 ---

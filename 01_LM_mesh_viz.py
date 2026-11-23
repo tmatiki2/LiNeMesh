@@ -1,6 +1,7 @@
 """
-LiNeMesh evaluation: generate an analysis mesh for a BridgeNet test domain with the
-pretrained model, report point-cloud metrics against the ground truth and visualise it.
+LiNeMesh evaluation: generate the analysis mesh of a BridgeNet test domain with the
+pretrained model, assemble it as an FE mesh (unique nodes + 8-node hexahedra), report the
+metrics of the paper against the ground truth and visualise it.
 
     python 01_LM_mesh_viz.py                    # random test domain from the paper's list
     python 01_LM_mesh_viz.py --sample 5040      # a specific test domain
@@ -8,6 +9,14 @@ pretrained model, report point-cloud metrics against the ground truth and visual
 
 Paths come from LM_paths.py: test data in data/bridgenet/test, weights in weights/,
 results in outputs/. The pretrained weights are downloaded automatically on first run.
+
+Outputs (outputs/):
+    linemesh_<id>.vtk              hexahedral mesh with the occupancy confidence per element (ParaView)
+    linemesh_<id>.inp              same mesh as Abaqus C3D8 elements (nodes/elements only; materials,
+                                   supports and loads are defined in the FE software)
+    linemesh_<id>_nodes.npy        (M, 3) unique nodes
+    linemesh_<id>_elements.npy     (K, 8) connectivity (VTK / C3D8 vertex order)
+    linemesh_<id>_mesh_points.npy  raw (N*9, 3) output: centroid + 8 corners per element
 """
 import os
 import argparse
@@ -22,12 +31,14 @@ from LM_models import *
 from LM_utils import *
 from LM_paths import TEST_DIR, OUTPUT_DIR, PRETRAINED_WEIGHTS, render_dir, list_domains, ensure_weights
 
-# test domains evaluated in the paper
-PAPER_SAMPLES = [5040, 5045, 5015, 5311, 5384, 5226, 5331, 5209, 5328, 5278, 5258, 5145, 5462, 5262, 5269,
-                 5408, 5493, 5491, 5263, 5028, 5480]
+# held-out test domains: the five reported in the paper (05015, 05209, 05311, 05328, 05384)
+# and additional examples to try out
+PAPER_SAMPLES = [5015, 5209, 5311, 5328, 5384]
+EXTRA_SAMPLES = [5040, 5045, 5226, 5331, 5278, 5258, 5145, 5462, 5262, 5269, 5408, 5493, 5491, 5263, 5028, 5480]
 
 ap = argparse.ArgumentParser(description="LiNeMesh evaluation on a BridgeNet test domain")
 ap.add_argument("--sample", type=int, default=None, help="test domain id (default: random paper sample)")
+ap.add_argument("--wireframe", action="store_true", help="also draw the element edges")
 ap.add_argument("--n-views", type=int, default=25, help="number of field images used (default 25)")
 ap.add_argument("--mesh-size", type=float, default=0.05, help="element size of the coarse mesh (default 0.05)")
 ap.add_argument("--weights", type=str, default=str(PRETRAINED_WEIGHTS), help="model weights (.pth)")
@@ -53,7 +64,7 @@ if not available:
 if args.sample is not None:
     dmm = args.sample
 else:
-    cands = [s for s in PAPER_SAMPLES if s in available] or available
+    cands = [s for s in PAPER_SAMPLES + EXTRA_SAMPLES if s in available] or available
     dmm = random.choice(cands)
 if dmm not in available:
     raise SystemExit(f"Test domain {dmm:05d} not found in {args.data}")
@@ -94,10 +105,10 @@ for idx in range(len(img_s)):
 imgs_f = torch.concat(all_inps, 0)
 gimgs, imgs, Ts, Rs = gen_cano_imgs_only(lnb, rad=1, rmr=False)
 
-## Run evals and build meshes
+## Run evals and keep the occupied elements
 pass_meshes = []
-pass_cols = []
-nmax = 90000
+pass_conf = []
+nmax = 90000  # number of mesh points (10,000 elements) per batch
 with torch.no_grad():
     mod1n = mod1.eval()
     for start in range(0, len(amesh), nmax):
@@ -106,48 +117,64 @@ with torch.no_grad():
         out2 = data_eval(meshs, Ts, Rs, imgs, imgs_f)
         all_inps, _, vis_mat_p = out2
         pred_cls_ = mod1n([all_inps], [vis_mat_p])
-        predds = pred_cls_.cpu()
-        pred_cls = torch.argmax(torch.softmax(predds[:, :3], 1), 1).numpy()
-        pred_cols = predds[:, 3:6].numpy()
-        pps = [[meshs[kkp * 9:(kkp * 9 + 9), :], np.vstack([pred_cols[kkp]] * 9)] for kkp in range(len(pred_cls))
-               if pred_cls[kkp] == 1]
-        if len(pps) > 0:
-            msh, cols = map(list, zip(*pps))
-            pass_meshes.append(np.vstack(msh))
-            pass_cols.append(np.vstack(cols))
-        print(f"processed {end}/{len(amesh)} vertices")
+        prob = torch.softmax(pred_cls_.cpu()[:, :3], 1).numpy()
+        occ = np.argmax(prob, 1) == 1
+        if occ.any():
+            pass_meshes.append(meshs.reshape(-1, 9, 3)[occ].reshape(-1, 3))
+            pass_conf.append(prob[occ, 1])
+        print(f"processed {end}/{len(amesh)} mesh points")
 
 if not pass_meshes:
     raise SystemExit("No mesh elements were classified as occupied.")
-npass_meshes = np.vstack(pass_meshes)
-cols = 0.6 * np.ones_like(npass_meshes)
+npass_meshes = np.vstack(pass_meshes)      # (N*9, 3): centroid + 8 corners per occupied element
+conf = np.concatenate(pass_conf)           # occupancy confidence of each occupied element
 
-## --- compute metrics and visualize mesh vertices
-th_mtx1 = 0.05
-th_mtx2 = 0.1
-print("----- metrics @ tau = %.2f -----" % th_mtx1)
-metrics1 = pointcloud_metrics(npass_meshes, xyz_gt, threshold=th_mtx1)
-print("----- metrics @ tau = %.2f -----" % th_mtx2)
-metrics2 = pointcloud_metrics(npass_meshes, xyz_gt, threshold=th_mtx2)
+## --- FE mesh: unique nodes (closer than 1e-4 merged) and hexahedral connectivity.
+# The candidate cubes used at inference may overlap; element_size rebuilds each element as a
+# cube of the coarse-mesh size about its centroid, so neighbouring elements share faces.
+nodes, elements, keep, info = points_to_fe_mesh(npass_meshes, tol=1e-4, element_size=ms, return_info=True)
+conf = conf[keep]
+print("FE mesh: {nodes} nodes, {elements_out} hexahedra, {connected_components} connected component(s), "
+      "{boundary_faces} boundary faces".format(**info))
 
-import open3d as o3d
+## --- metrics (paper protocol): unique mesh points against the ground truth, at 5 and 10 cm
+eval_pts = unique_points(npass_meshes, tol=1e-4)
+metrics = {}
+for tau in (0.05, 0.10):
+    print("----- metrics @ tau = %.2f m -----" % tau)
+    metrics[tau] = pointcloud_metrics(eval_pts, xyz_gt, threshold=tau)
 
-point_cloud_i = o3d.geometry.PointCloud()
-point_cloud_i.points = o3d.utility.Vector3dVector(npass_meshes)
-point_cloud_i.colors = o3d.utility.Vector3dVector(cols)
-
+## --- save
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-out_ply = OUTPUT_DIR / f"linemesh_{bridge_id}.ply"
-o3d.io.write_point_cloud(str(out_ply), point_cloud_i)
-np.save(OUTPUT_DIR / f"linemesh_{bridge_id}_mesh_vertices.npy", npass_meshes.astype(np.float32))
-print("saved:", out_ply)
+stem = OUTPUT_DIR / f"linemesh_{bridge_id}"
+save_fe_mesh(f"{stem}.vtk", nodes, elements, cell_data={"occupancy_confidence": conf})
+save_fe_mesh(f"{stem}.inp", nodes, elements)
+np.save(f"{stem}_nodes.npy", nodes)
+np.save(f"{stem}_elements.npy", elements)
+np.save(f"{stem}_mesh_points.npy", npass_meshes.astype(np.float32))
+print("saved:", f"{stem}.vtk", f"{stem}.inp")
 
+## --- visualise the boundary faces of the mesh, coloured by occupancy confidence
 if not args.no_vis:
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name='LiNeMesh: mesh vertices', width=800, height=600, left=50, top=50)
-    vis.add_geometry(point_cloud_i)
-    render_option = vis.get_render_option()
-    render_option.point_size = 2.0
-    render_option.point_show_normal = False
-    vis.run()
-    vis.destroy_window()
+    import open3d as o3d
+    import matplotlib.cm as cm
+    faces, owner, count = hex_faces(elements)
+    bnd = count == 1
+    quads, own = faces[bnd], owner[bnd]
+    tris = np.vstack([quads[:, [0, 1, 2]], quads[:, [0, 2, 3]]])
+    # per-vertex colour: duplicate the face vertices so each face carries its element's colour
+    c = cm.viridis(np.clip((conf - 0.5) / 0.5, 0, 1))[:, :3]
+    vtx = nodes[tris].reshape(-1, 3)
+    col = np.repeat(np.vstack([c[own], c[own]]), 3, axis=0)
+    mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vtx),
+                                     o3d.utility.Vector3iVector(np.arange(len(vtx)).reshape(-1, 3)))
+    mesh.vertex_colors = o3d.utility.Vector3dVector(col)
+    mesh.compute_vertex_normals()
+    geoms = [mesh]
+    if args.wireframe:
+        edges = np.unique(np.sort(np.vstack([quads[:, [0, 1]], quads[:, [1, 2]], quads[:, [2, 3]], quads[:, [3, 0]]]), 1), axis=0)
+        ls = o3d.geometry.LineSet(o3d.utility.Vector3dVector(nodes), o3d.utility.Vector2iVector(edges))
+        ls.paint_uniform_color([0.1, 0.1, 0.1])
+        geoms.append(ls)
+    o3d.visualization.draw_geometries(geoms, window_name=f"LiNeMesh {bridge_id}: analysis mesh "
+                                      "(colour: occupancy confidence 0.5 -> 1)", width=1000, height=700)
