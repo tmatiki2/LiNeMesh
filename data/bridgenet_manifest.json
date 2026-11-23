@@ -1,8 +1,27 @@
 {
-  "description": "BridgeNet release assets. Each zip holds train/<id>/<id>_render/... or test/<id>/<id>_render/... folders. Update 'tag' and 'files' after uploading the dataset to a GitHub release.",
-  "tag": "bridgenet-v1",
-  "files": [
-    {"name": "bridgenet_test.zip", "split": "test"},
-    {"name": "bridgenet_train.zip", "split": "train"}
-  ]
+  "description": "BridgeNet synthetic dataset, published as a single ZIP archive split into numbered binary chunks (GitHub release assets). Concatenating the parts in order (cat part_000 part_001 ... > bridgenet.zip) reconstructs the original archive, whose SHA-256 is given below and in the release asset original.sha256. The archive holds bridgenet/train/<id>/... (5000 domains, ids 00000-04999) and bridgenet/test/<id>/... (500 domains, ids 05000-05499).",
+  "tag": "v1.0",
+  "archive": "bridgenet.zip",
+  "archive_root": "bridgenet",
+  "archive_size": 22266301379,
+  "sha256": "6338631d99b554e7066860db5757a139c52f2011d063d6c8cfccb6246a45a0e1",
+  "checksum_asset": "original.sha256",
+  "parts": [
+    {"name": "part_000", "size": 1992294400},
+    {"name": "part_001", "size": 1992294400},
+    {"name": "part_002", "size": 1992294400},
+    {"name": "part_003", "size": 1992294400},
+    {"name": "part_004", "size": 1992294400},
+    {"name": "part_005", "size": 1992294400},
+    {"name": "part_006", "size": 1992294400},
+    {"name": "part_007", "size": 1992294400},
+    {"name": "part_008", "size": 1992294400},
+    {"name": "part_009", "size": 1992294400},
+    {"name": "part_010", "size": 1992294400},
+    {"name": "part_011", "size": 351062979}
+  ],
+  "splits": {
+    "train": {"count": 5000, "first_id": 0, "last_id": 4999},
+    "test": {"count": 500, "first_id": 5000, "last_id": 5499}
+  }
 }

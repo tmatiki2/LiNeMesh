@@ -1,10 +1,17 @@
 """
 LiNeMesh synthetic data generation with Blender (Cycles).
 
-Starting from a user-defined structural line diagram (LD), the script builds randomly
-perturbed 3D members around the LD, samples occupancy / SDF points, and renders
-field-like images with random camera poses, member textures, ground textures and
-sun light. Every generated domain is written in the BridgeNet layout:
+Starting from a user-defined structural line diagram (LD), the script generates, for each
+domain, a new configuration with the same topology (Section 3.4 of the paper):
+  - the LD is scaled by random factors along X, Y and Z (--scale-range) and every LD node is
+    displaced by a random offset (--node-jitter); members sharing a node stay connected;
+  - each member receives its own random width and thickness (--member-size);
+  - query points are sampled outside, on and inside the members and labelled with their
+    signed distance to the member surfaces (negative outside, 0 on, positive inside);
+    containment is tested against all members, so a point inside a neighbouring member is
+    never labelled exterior;
+and renders field-like images with random camera poses, member textures, ground textures
+and sun light. Every generated domain is written in the BridgeNet layout:
 
     data/synthetic/train/<id>/<id>_render/
         img_<j>.jpg, trans_<j>.npy, rots_<j>.npy   (images and camera poses)
@@ -25,6 +32,9 @@ Options (after the "--"):
     --samples N      Cycles samples per image (default 32)
     --cpu            render on the CPU instead of the GPU
     --seed N         random seed
+    --scale-range A B   range of the random global scale factors along X, Y, Z (default 0.8 1.2)
+    --node-jitter D     maximum random displacement of each LD node along X, Y, Z in m (default 0.05)
+    --member-size A B   range of the member width / thickness in m (default 0.01 0.1)
 
 Optional textures: put member textures (*.png / *.jpg) in assets/textures/ and ground
 textures in assets/backgrounds/. When those folders are empty, random colours are used.
@@ -65,6 +75,9 @@ ap.add_argument("--ld", type=str, default=None)
 ap.add_argument("--samples", type=int, default=32)
 ap.add_argument("--cpu", action="store_true")
 ap.add_argument("--seed", type=int, default=None)
+ap.add_argument("--scale-range", type=float, nargs=2, default=[0.8, 1.2])
+ap.add_argument("--node-jitter", type=float, default=0.05)
+ap.add_argument("--member-size", type=float, nargs=2, default=[0.01, 0.1])
 ARGS = ap.parse_args(argv)
 if ARGS.seed is not None:
     random.seed(ARGS.seed)
@@ -258,8 +271,11 @@ def blender_obj_to_trimesh(obj):
     obj_eval.to_mesh_clear()
     return tm
 
-def sampts(obj, N=1000, margin=0.5):
+def sampts(obj, N=1000, margin=0.5, n_inside=None):
+    """Query points of one member: N exterior points in its enlarged bounding box, N surface
+    points and n_inside interior points (default N // 2). Returns them with the trimesh."""
     tm = blender_obj_to_trimesh(obj)
+    n_inside = N // 2 if n_inside is None else n_inside
     pts_surface, _ = trimesh.sample.sample_surface(tm, count=N)
     mins = tm.bounds[0] - margin
     maxs = tm.bounds[1] + margin
@@ -272,12 +288,17 @@ def sampts(obj, N=1000, margin=0.5):
             size=(max(3 * N, 1000), 3)
         )
         inside_mask = tm.contains(candidates)
-        if len(pts_outside) < N:
-            pts_outside.extend(candidates[~inside_mask])
-    pts_outside = np.asarray(pts_outside[:N])
-    points = np.array(pts_outside)
-    pts_bounds = np.array(pts_surface)
-    return points, pts_bounds
+        pts_outside.extend(candidates[~inside_mask])
+    # interior points, sampled in the member's own bounding box
+    tries = 0
+    while len(pts_inside) < n_inside and tries < 50:
+        candidates = np.random.uniform(low=tm.bounds[0], high=tm.bounds[1], size=(max(4 * n_inside, 1000), 3))
+        pts_inside.extend(candidates[tm.contains(candidates)])
+        tries += 1
+    points = np.asarray(pts_outside[:N]).reshape(-1, 3)
+    pts_bounds = np.asarray(pts_surface).reshape(-1, 3)
+    pts_in = np.asarray(pts_inside[:n_inside]).reshape(-1, 3)
+    return points, pts_bounds, pts_in, tm
 
 def add_prismatic_member(
         xyz_top,
@@ -344,7 +365,7 @@ def add_prismatic_member(
         bm.to_mesh(mesh)
         bm.free()
         mesh.update()
-        sampled_points = sampts(obj, N=5000, margin=0.5)
+        sampled_points = sampts(obj, N=5000, margin=0.5)  # (exterior, surface, interior, trimesh)
         has_img = image_path is not None and os.path.exists(image_path)
         if has_img or ucol is not None:
             mat = bpy.data.materials.new(name=name + "_mat")
@@ -580,21 +601,30 @@ def render_with_cycles(
 
 
 
-def insert_bay(SLD_, scale_xyzs, image_path1=None, b_type="cylinder", ucol=None):
-    spts_ins = []
-    spts_ots = []
-    for brs in SLD_:
+def insert_bay(SLD_, member_sizes, image_path1=None, b_type="cylinder", ucol=None):
+    """Build one member per LD bar; member_sizes is an (N, 2) array of (width, thickness).
+    Returns the surface, exterior and interior query points of the whole structure, with
+    exterior points that fall inside any other member removed."""
+    surf, ext, inn, meshes = [], [], [], []
+    for brs, (bw, bt) in zip(SLD_, member_sizes):
         tb = tuple(brs[0].tolist())
         bb = tuple(brs[1].tolist())
-        ou1 = add_prismatic_member(tb,bb,scale_xyzs,mesh_type=b_type,image_path=image_path1,ucol=ucol)
+        sxy = (bw, bw) if b_type == "cylinder" else (bw, bt)
+        ou1 = add_prismatic_member(tb, bb, (sxy[0], sxy[1], 1.0), mesh_type=b_type, image_path=image_path1, ucol=ucol)
         if ou1 is not None:
-            pts_o, pts = ou1[0]
-            spts_ins.append(pts)
-            spts_ots.append(pts_o)
-
-    apts_in = np.vstack(spts_ins)
-    apts_ot = np.vstack(spts_ots)
-    return apts_in, apts_ot
+            pts_o, pts_s, pts_i, tm = ou1[0]
+            surf.append(pts_s); ext.append(pts_o); inn.append(pts_i); meshes.append(tm)
+    apts_s = np.vstack(surf)
+    apts_o = np.vstack(ext)
+    apts_i = np.vstack([p for p in inn if len(p)]) if any(len(p) for p in inn) else np.zeros((0, 3))
+    # union containment: an exterior point of one member may lie inside another member
+    keep = np.ones(len(apts_o), bool)
+    for tm in meshes:
+        lo, hi = tm.bounds
+        cand = np.where(keep & np.all((apts_o >= lo) & (apts_o <= hi), axis=1))[0]
+        if len(cand):
+            keep[cand[tm.contains(apts_o[cand])]] = False
+    return apts_s, apts_o[keep], apts_i
 
 def add_ground_plane(
         z=0.0,
@@ -712,10 +742,16 @@ while kdoms < Ndoms:
         print("current dom:", kdoms)
         clean_scene()
         setup_gpu(use_gpu=not ARGS.cpu)
-        ## --- generate random global perturbation to LD --- other forms of anisotropic perturbations can be applied
-        rng = 1.0 ## 2 meters perturbation --- reset as needed
-        dxdydz = np.random.uniform(-rng,rng,3)
-        SLD_ = SLD + dxdydz.reshape(1,1,-1)
+        ## --- new LD configuration with the same topology (Section 3.4):
+        ## random global scaling along X, Y, Z and a random displacement of every LD node;
+        ## bars sharing a node are displaced together, so the connectivity is preserved
+        ldn = SLD.reshape(-1, 3)
+        _, node_id = np.unique(np.round(ldn, 6), axis=0, return_inverse=True)
+        node_id = node_id.reshape(-1)
+        n_nodes = node_id.max() + 1
+        scl = np.random.uniform(ARGS.scale_range[0], ARGS.scale_range[1], 3)
+        jit = np.random.uniform(-ARGS.node_jitter, ARGS.node_jitter, (n_nodes, 3))
+        SLD_ = (ldn * scl[None, :] + jit[node_id]).reshape(SLD.shape)
 
         ldpts = SLD_.reshape(-1,3)
         ctr, maxx = np.min(ldpts,0), np.max(ldpts,0)
@@ -723,24 +759,26 @@ while kdoms < Ndoms:
 
         maxx = maxx - ctr
         lb, hgt, wb = maxx[1], maxx[2], maxx[0]
-        sx = np.random.uniform(0.01,0.1) # --- set the ranges of member dimensions
-        scl_xyz=tuple([sx]*3)
+        # --- width and thickness of every member, sampled independently
+        member_sizes = np.random.uniform(ARGS.member_size[0], ARGS.member_size[1], (len(SLD_), 2))
         b_type = random.choice(["cylinder", "cube"])
 
         if TEXTURES:
             image_path, ucol = random.choice(TEXTURES), None
         else:
             image_path, ucol = None, tuple(np.random.randint(40, 230, 3).tolist())
-        pcd2, pcd1 = insert_bay(SLD_, scl_xyz, image_path, b_type, ucol=ucol)
+        pcd2, pcd1, pcd3 = insert_bay(SLD_, member_sizes, image_path, b_type, ucol=ucol)
 
-        pcd1 = replace_nans(pcd1)
-        pcd2 = replace_nans(pcd2)
-        pcd1 = np.ascontiguousarray(pcd1, dtype=np.float64)
-        pcd2 = np.ascontiguousarray(pcd2, dtype=np.float64)
+        pcd1 = np.ascontiguousarray(replace_nans(pcd1), dtype=np.float64)   # exterior
+        pcd2 = np.ascontiguousarray(replace_nans(pcd2), dtype=np.float64)   # surface
+        pcd3 = np.ascontiguousarray(replace_nans(pcd3), dtype=np.float64)   # interior
 
-        sdfs = knn(pcd1,pcd2,th=0.001)
-        pts = np.vstack((pcd1,pcd2))
-        sdfs = np.hstack((sdfs,np.zeros(len(pcd2))))
+        # signed distance to the member surfaces: negative outside, 0 on, positive inside.
+        # The training notebook labels points with sdf >= -0.001 as occupied.
+        sdf_out = knn(pcd1, pcd2, th=0.001)
+        sdf_in = -knn(pcd3, pcd2, th=0.001) if len(pcd3) else np.zeros(0)
+        pts = np.vstack((pcd1, pcd2, pcd3))
+        sdfs = np.hstack((sdf_out, np.zeros(len(pcd2)), sdf_in))
 
         gp_imgp = random.choice(BACKGROUNDS) if BACKGROUNDS else None
         gp_col = tuple(np.random.uniform(0.15, 0.6, 3).tolist())

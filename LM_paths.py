@@ -38,10 +38,12 @@ OUTPUT_DIR = REPO_ROOT / "outputs"
 
 # ----------------------------------------------------------------------------- GitHub release assets
 GITHUB_REPO = "tmatiki2/LiNeMesh"
-RELEASE_BASE = f"https://github.com/{GITHUB_REPO}/releases/download"
+# LINEMESH_RELEASE_BASE can point to a mirror holding the same release assets
+RELEASE_BASE = os.environ.get("LINEMESH_RELEASE_BASE", f"https://github.com/{GITHUB_REPO}/releases/download")
 WEIGHTS_TAG = "v1.0"                                            # release that holds the pretrained model
 WEIGHTS_URL = f"{RELEASE_BASE}/{WEIGHTS_TAG}/{PRETRAINED_WEIGHTS.name}"
 DATASET_MANIFEST = REPO_ROOT / "data" / "bridgenet_manifest.json"
+TEST_IDS_FILE = REPO_ROOT / "data" / "bridgenet_test_ids.json"   # paper test ids and ids with ground truth
 
 
 def render_dir(split_dir, domain_id):
@@ -62,17 +64,26 @@ def list_domains(split_dir):
     return sorted(ids)
 
 
-def download(url, dest, desc=None):
-    """Download url to dest with a simple progress bar (standard library only)."""
+def download(url, dest, desc=None, expected_size=None):
+    """Download url to dest with a progress bar (standard library only).
+    An interrupted download (dest + '.part') is resumed with an HTTP Range request.
+    If expected_size is given, the final size is checked."""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() and (expected_size is None or dest.stat().st_size == expected_size):
+        return dest
     tmp = dest.with_suffix(dest.suffix + ".part")
     desc = desc or dest.name
-    print(f"Downloading {desc}\n  from {url}")
-    try:
-        with urllib.request.urlopen(url) as r, open(tmp, "wb") as f:
-            total = int(r.headers.get("Content-Length", 0))
+    done = tmp.stat().st_size if tmp.exists() else 0
+    if expected_size is not None and done > expected_size:
+        tmp.unlink(); done = 0
+    print(f"Downloading {desc}\n  from {url}" + (f"\n  resuming at {done / 2**20:.1f} MB" if done else ""))
+    req = urllib.request.Request(url, headers={"Range": f"bytes={done}-"} if done else {})
+    with urllib.request.urlopen(req) as r:
+        if done and r.status != 206:          # server ignored the range: start again
             done = 0
+        total = int(r.headers.get("Content-Length", 0)) + done
+        with open(tmp, "ab" if done else "wb") as f:
             while True:
                 chunk = r.read(1 << 20)
                 if not chunk:
@@ -80,16 +91,13 @@ def download(url, dest, desc=None):
                 f.write(chunk)
                 done += len(chunk)
                 if total:
-                    pct = 100 * done / total
-                    sys.stdout.write(f"\r  {done / 2**20:8.1f} / {total / 2**20:.1f} MB ({pct:5.1f} %)")
+                    sys.stdout.write(f"\r  {done / 2**20:9.1f} / {total / 2**20:.1f} MB ({100 * done / total:5.1f} %)")
                 else:
-                    sys.stdout.write(f"\r  {done / 2**20:8.1f} MB")
+                    sys.stdout.write(f"\r  {done / 2**20:9.1f} MB")
                 sys.stdout.flush()
-        print()
-    except Exception:
-        if tmp.exists():
-            tmp.unlink()
-        raise
+    print()
+    if expected_size is not None and done != expected_size:
+        raise IOError(f"{desc}: downloaded {done} bytes, expected {expected_size} (run again to resume)")
     shutil.move(str(tmp), str(dest))
     return dest
 

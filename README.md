@@ -18,6 +18,7 @@ LiNeMesh generates the analysis mesh (the discretized analysis domain) of civil 
 - [5. Training](#5-training)
 - [6. Synthetic data from your own line diagram (Blender)](#6-synthetic-data-from-your-own-line-diagram-blender)
 - [Data format](#data-format)
+- [Data availability](#data-availability)
 - [Citation](#citation)
 - [License](#license)
 
@@ -35,12 +36,14 @@ LiNeMesh/
 ├── LM_paths.py                   # all paths and download locations (relative to the repo)
 ├── requirements.txt
 ├── scripts/
-│   ├── download_bridgenet.py     # downloads and unpacks BridgeNet into data/bridgenet/
+│   ├── download_bridgenet.py     # downloads the release parts, rebuilds/extracts BridgeNet into data/bridgenet/
 │   ├── download_weights.py       # downloads the pretrained model into weights/
 │   ├── mesh_from_points.py       # saved (N*9, 3) output -> FE mesh (.vtk/.inp) and metrics
+│   ├── reproduce_table2.py       # LiNeMesh rows of Table II on the five test bridges
 │   └── install_blender_deps.py   # installs trimesh/scipy/rtree into Blender's Python
 ├── data/
-│   └── bridgenet_manifest.json   # list of dataset archives (GitHub release assets)
+│   ├── bridgenet_manifest.json   # release parts of the dataset (names, sizes, SHA-256)
+│   └── bridgenet_test_ids.json   # test ids of the paper and test domains with ground truth
 ├── weights/                      # pretrained / trained models (*.pth, downloaded)
 ├── assets/
 │   ├── graphical_abstract.png
@@ -98,19 +101,48 @@ The ImageNet weights of the ResNet backbones are downloaded automatically by `to
 
 ## 2. Download the BridgeNet dataset
 
+BridgeNet (synthetic) holds **5000 training domains** (ids `00000`–`04999`) and **500 test domains** (ids `05000`–`05499`). It is published on the [v1.0 release](https://github.com/tmatiki2/LiNeMesh/releases/tag/v1.0) as one ZIP archive (22.3 GB) split into twelve binary parts, `part_000` … `part_011`, together with `original.sha256`, the SHA-256 checksum of the complete archive.
+
+**With the script (recommended):**
+
 ```bash
-python scripts/download_bridgenet.py               # train + test
-python scripts/download_bridgenet.py --split test  # test split only (enough for evaluation)
+python scripts/download_bridgenet.py --split test   # test split only: downloads 3 parts (~4.3 GB)
+python scripts/download_bridgenet.py --split train  # training split only
+python scripts/download_bridgenet.py                # everything (~22.3 GB download)
 ```
 
-The archives are downloaded from this repository's [Releases](https://github.com/tmatiki2/LiNeMesh/releases) and unpacked into:
+- The full download concatenates the parts in order (the same as `cat`), verifies the SHA-256 checksum and extracts `train/` and `test/`. Allow about 95 GB of free disk space during this step (parts, archive and ~48 GB of extracted data). Use `--keep-parts` or `--keep-zip` to keep the intermediate files.
+- `--split test` or `--split train` downloads only the parts that hold that split and extracts it directly from the parts, without writing the 22 GB archive. Every file is checked against its CRC-32.
+- Interrupted downloads are resumed when the script is run again.
+- If you downloaded the parts yourself, pass their folder with `--parts-dir DIR`.
+
+**Manually.** Download all twelve parts and `original.sha256` from the release into one folder, then:
+
+```bash
+# Linux / macOS
+cat part_000 part_001 part_002 part_003 part_004 part_005 part_006 part_007 part_008 part_009 part_010 part_011 > bridgenet.zip
+sha256sum bridgenet.zip            # macOS: shasum -a 256 bridgenet.zip  (must match original.sha256)
+unzip bridgenet.zip -d data/       # creates data/bridgenet/train and data/bridgenet/test
+```
+
+```bat
+:: Windows (Command Prompt)
+copy /b part_000+part_001+part_002+part_003+part_004+part_005+part_006+part_007+part_008+part_009+part_010+part_011 bridgenet.zip
+certutil -hashfile bridgenet.zip SHA256
+```
+
+On Windows, extract `bridgenet.zip` into `data\` with 7-Zip or `tar -xf bridgenet.zip -C data`.
+
+The result is:
 
 ```
-data/bridgenet/train/<id>/<id>_render/
-data/bridgenet/test/<id>/<id>_render/
+data/bridgenet/train/<id>/<id>_render/    5000 training domains
+data/bridgenet/test/<id>/<id>_render/      500 test domains
 ```
 
-> **Note:** BridgeNet is being prepared for release. Until it is published, the download script reports that the archives are not available yet.
+To keep the dataset on another disk, set `LINEMESH_DATA` to the folder that should contain `train/` and `test/`.
+
+The five test bridges reported in Table II of the paper (05015, 05209, 05311, 05328, 05384) and the 31 test domains that include a ground-truth point cloud (`dense_pts.npy`) are listed in `data/bridgenet_test_ids.json`.
 
 ---
 
@@ -120,7 +152,7 @@ data/bridgenet/test/<id>/<id>_render/
 python scripts/download_weights.py
 ```
 
-This saves `weights/mod_brdgnet_ptrain.pth`. You can skip this step, because `01_LM_mesh_viz.py` downloads the weights automatically on its first run.
+This saves `weights/mod_brdgnet_ptrain.pth` (the BridgeNet model of the paper) from the v1.0 release. You can skip this step, because `01_LM_mesh_viz.py` downloads the weights automatically on its first run.
 
 ---
 
@@ -131,10 +163,10 @@ python 01_LM_mesh_viz.py
 ```
 
 The script:
-1. picks a BridgeNet test domain (the five reported in the paper, 05015, 05209, 05311, 05328 and 05384, or one of the additional test examples);
+1. picks a BridgeNet test domain (by default one of the five of Table II: 05015, 05209, 05311, 05328, 05384) and selects 25 of its field images with a fixed seed;
 2. builds a coarse hexahedral mesh around the LD with a prescribed element size;
 3. renders the canonical LD views and combines them with the field images;
-4. keeps the elements predicted as occupied, with their occupancy confidence;
+4. keeps the elements whose predicted occupancy is at least 50 %, with their occupancy confidence;
 5. assembles the FE mesh: unique nodes (coincident nodes closer than 10⁻⁴ m merged) and 8-node hexahedral connectivity, and reports its number of nodes, elements, connected components and boundary faces;
 6. reports the metrics of the paper against the ground-truth point cloud at τ = 0.05 and τ = 0.10 m;
 7. saves the mesh to `outputs/` and shows its boundary faces coloured by occupancy confidence in an Open3D window.
@@ -158,6 +190,7 @@ The script:
 | `linemesh_<id>.inp` | the same mesh as Abaqus C3D8 elements (nodes and elements only) |
 | `linemesh_<id>_nodes.npy`, `linemesh_<id>_elements.npy` | unique nodes `(M, 3)` and connectivity `(K, 8)` (VTK / C3D8 vertex order) |
 | `linemesh_<id>_mesh_points.npy` | raw output `(N*9, 3)`: centroid and 8 corners of each occupied element |
+| `linemesh_<id>_metrics.json` | metrics, mesh statistics (nodes, elements, connected components) and the settings of the run |
 
 The candidate cubes evaluated by the network may overlap; the FE mesh rebuilds each occupied element as a cube of the coarse-mesh size about its centroid, so neighbouring elements share faces (a conforming mesh).
 
@@ -170,7 +203,7 @@ Options:
 | `--mesh-size H` | 0.05 | element size of the coarse mesh |
 | `--weights FILE` | `weights/mod_brdgnet_ptrain.pth` | model weights |
 | `--no-vis` | off | do not open a window (servers / SSH); results are still saved |
-| `--seed N` | none | random seed for reproducible view selection |
+| `--seed N` | 0 | random seed for the selection of the field images |
 | `--wireframe` | off | also draw the element edges |
 
 Example:
@@ -178,6 +211,15 @@ Example:
 ```bash
 python 01_LM_mesh_viz.py --sample 5015 --mesh-size 0.05 --no-vis
 ```
+
+**Reproducing Table II (LiNeMesh rows).**
+
+```bash
+python scripts/download_bridgenet.py --split test
+python scripts/reproduce_table2.py
+```
+
+This runs the pretrained model on the five test bridges of the paper and writes the table to `outputs/table2_linemesh.md`. The selection of field images is random (fixed seed), so the metrics may differ slightly from the paper; use `--seed` to try other selections. The competing methods of Table II (RealityCapture, COLMAP, Gaussian Splatting, MUSt3R, NeuS) were run with their public implementations and are not part of this repository.
 
 **Converting a saved output.** Any `(N*9, 3)` LiNeMesh output can be converted to an FE mesh, and evaluated against a reference point cloud, with:
 
@@ -219,11 +261,13 @@ A CUDA GPU is strongly recommended for training.
 
 ## 6. Synthetic data from your own line diagram (Blender)
 
-`01_LM_synthetic_data.py` generates training domains for a user-defined LD. For each domain it:
-- perturbs the LD;
-- builds prismatic or cylindrical members of random size around it;
-- samples occupancy/SDF points;
-- renders field-like images with random cameras, textures and lighting in Blender Cycles.
+`01_LM_synthetic_data.py` generates training domains for a user-defined LD (Section 3.4 of the paper). For each domain it:
+- scales the LD by random factors along X, Y and Z and displaces every LD node randomly, keeping the members connected (same topology, different dimensions);
+- builds a prismatic or cylindrical member around every LD bar, each with its own random width and thickness;
+- samples query points outside, on and inside the members and stores their signed distance to the member surfaces (negative outside, 0 on, positive inside), testing containment against all members; the training notebook labels points with a signed distance ≥ −1 mm as occupied;
+- renders field-like images with random cameras, intrinsics, textures and lighting in Blender Cycles.
+
+BridgeNet itself was generated with the parametric bridge generator of the BridgeNet dataset; this script is the generator used for the existing structures of the paper, with their schematic LDs and ranges (Appendix A1).
 
 The output uses the BridgeNet layout, so the training notebook can use it directly.
 
@@ -261,6 +305,9 @@ Everything after `--` is passed to the script:
 | `--samples N` | 32 | Cycles samples per image |
 | `--cpu` | off | render on the CPU (by default the first available GPU is used: OptiX, CUDA, HIP, Metal or oneAPI) |
 | `--seed N` | none | random seed |
+| `--scale-range A B` | 0.8 1.2 | range of the random global scale factors along X, Y, Z |
+| `--node-jitter D` | 0.05 | maximum random displacement of each LD node along X, Y, Z (m) |
+| `--member-size A B` | 0.01 0.1 | range of the member width and thickness (m) |
 
 **Optional textures.** Put member textures (`*.png`, `*.jpg`) in `assets/textures/` and ground textures in `assets/backgrounds/`. When these folders are empty, random colours are used.
 
@@ -273,11 +320,24 @@ Each domain (BridgeNet or synthetic) is a folder `<id>/<id>_render/` containing:
 | File | Content |
 |---|---|
 | `img_<j>.jpg` | field image *j* (640 × 480) |
-| `trans_<j>.npy`, `rots_<j>.npy` | camera position and world-to-camera rotation of image *j* |
-| `line_bars.npy` | structural LD, `(N, 2, 3)` |
-| `pts.npy`, `sdf.npy` | sampled points and their signed-distance labels (training) |
-| `Km.npy` | camera intrinsics (synthetic data) |
-| `dense_pts.npy` | dense ground-truth point cloud (test split, used for the metrics) |
+| `trans_<j>.npy`, `rots_<j>.npy` | camera position and world-to-camera rotation of image *j* (used for training only; not used at inference) |
+| `line_bars.npy` | structural LD, `(N, 2, 3)`: the two end nodes of each bar |
+| `pts.npy`, `sdf.npy` | query points and their signed distance to the member surfaces (training) |
+| `Km_0.npy` (BridgeNet) / `Km.npy` (synthetic) | camera intrinsics |
+| `dense_pts.npy` | dense ground-truth point cloud sampled from the CAD model (31 test domains) |
+
+BridgeNet domains also include the CAD model (`<id>_models/<id>.obj`), the topology (`<id>_topology_properties/`) and the generator parameters (`<id>_input_params.json`).
+
+---
+
+## Data availability
+
+| Item | Where |
+|---|---|
+| Code (network, training, evaluation, FE mesh export, synthetic data generator) | this repository |
+| Pretrained BridgeNet model | release v1.0 (`mod_brdgnet_ptrain.pth`) |
+| BridgeNet train/test data, test ids | release v1.0 (`part_000`–`part_011`), `data/bridgenet_test_ids.json` |
+| Field data of the existing structures B-001–B-004 (images, LiDAR references, LDs) | not included in this release |
 
 ---
 
@@ -287,7 +347,7 @@ If you use LiNeMesh or BridgeNet, please cite:
 
 ```bibtex
 @article{linemesh,
-  title   = {LiNeMesh: Analysis Mesh Generation from Images and Line Diagrams},
+  title   = {LiNeMesh: Line-Diagram-Informed Neural Mesh Generation from Multi-View Uncalibrated Images},
   author  = {To be added on publication},
   journal = {},
   year    = {2026}

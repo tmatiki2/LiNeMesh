@@ -1,0 +1,5 @@
+{
+  "description": "BridgeNet test domains. 'paper' are the five bridges reported in Table II of the paper; 'with_ground_truth' are all test domains that include the dense ground-truth point cloud (dense_pts.npy) used by 01_LM_mesh_viz.py for the metrics. The other test domains can be meshed but not scored.",
+  "paper": [5015, 5209, 5311, 5328, 5384],
+  "with_ground_truth": [5015, 5028, 5040, 5045, 5060, 5074, 5090, 5145, 5209, 5216, 5226, 5229, 5247, 5258, 5262, 5263, 5269, 5278, 5311, 5328, 5329, 5331, 5384, 5391, 5408, 5462, 5463, 5470, 5480, 5491, 5493]
+}
