@@ -152,7 +152,7 @@ The five test bridges reported in Table II of the paper (05015, 05209, 05311, 05
 python scripts/download_weights.py
 ```
 
-This saves `weights/mod_brdgnet_ptrain.pth` (the BridgeNet model of the paper) from the v1.0 release. You can skip this step, because `01_LM_mesh_viz.py` downloads the weights automatically on its first run.
+This downloads `mod_brdgnet_ptrain.zip` (~1.9 GB) from the v1.0 release and unpacks it to `weights/mod_brdgnet_ptrain.pth` (the BridgeNet model of the paper). To do it by hand, download the zip from the release and extract the `.pth` file into `weights/`. You can skip this step, because `01_LM_mesh_viz.py` downloads the weights automatically on its first run.
 
 ---
 
@@ -219,7 +219,7 @@ python scripts/download_bridgenet.py --split test
 python scripts/reproduce_table2.py
 ```
 
-This runs the pretrained model on the five test bridges of the paper and writes the table to `outputs/table2_linemesh.md`. The selection of field images is random (fixed seed), so the metrics may differ slightly from the paper; use `--seed` to try other selections. The competing methods of Table II (RealityCapture, COLMAP, Gaussian Splatting, MUSt3R, NeuS) were run with their public implementations and are not part of this repository.
+This runs the pretrained model on the five test bridges of the paper and writes the table, with the values of the paper below the new ones, to `outputs/table2_linemesh.md`. Differences of a few hundredths are expected: the 25 field images are drawn at random (fixed seed; use `--seed` to try other selections), and the coarse mesh is built at exactly 5 cm, whereas the runs of the paper used a slightly different, reduced-precision grid. The released ground-truth point clouds (`dense_pts.npy`) are identical to those used in the paper. The competing methods of Table II (RealityCapture, COLMAP, Gaussian Splatting, MUSt3R, NeuS) were run with their public implementations and are not part of this repository.
 
 **Converting a saved output.** Any `(N*9, 3)` LiNeMesh output can be converted to an FE mesh, and evaluated against a reference point cloud, with:
 
@@ -335,7 +335,7 @@ BridgeNet domains also include the CAD model (`<id>_models/<id>.obj`), the topol
 | Item | Where |
 |---|---|
 | Code (network, training, evaluation, FE mesh export, synthetic data generator) | this repository |
-| Pretrained BridgeNet model | release v1.0 (`mod_brdgnet_ptrain.pth`) |
+| Pretrained BridgeNet model | release v1.0 (`mod_brdgnet_ptrain.zip` → `mod_brdgnet_ptrain.pth`) |
 | BridgeNet train/test data, test ids | release v1.0 (`part_000`–`part_011`), `data/bridgenet_test_ids.json` |
 | Field data of the existing structures B-001–B-004 (images, LiDAR references, LDs) | not included in this release |
 

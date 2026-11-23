@@ -41,7 +41,8 @@ GITHUB_REPO = "tmatiki2/LiNeMesh"
 # LINEMESH_RELEASE_BASE can point to a mirror holding the same release assets
 RELEASE_BASE = os.environ.get("LINEMESH_RELEASE_BASE", f"https://github.com/{GITHUB_REPO}/releases/download")
 WEIGHTS_TAG = "v1.0"                                            # release that holds the pretrained model
-WEIGHTS_URL = f"{RELEASE_BASE}/{WEIGHTS_TAG}/{PRETRAINED_WEIGHTS.name}"
+WEIGHTS_ZIP = PRETRAINED_WEIGHTS.with_suffix(".zip").name               # release asset: zip holding the .pth
+WEIGHTS_URL = f"{RELEASE_BASE}/{WEIGHTS_TAG}/{WEIGHTS_ZIP}"
 DATASET_MANIFEST = REPO_ROOT / "data" / "bridgenet_manifest.json"
 TEST_IDS_FILE = REPO_ROOT / "data" / "bridgenet_test_ids.json"   # paper test ids and ids with ground truth
 
@@ -103,15 +104,24 @@ def download(url, dest, desc=None, expected_size=None):
 
 
 def ensure_weights(path=PRETRAINED_WEIGHTS, url=WEIGHTS_URL):
-    """Return the path of the pretrained weights, downloading them on first use."""
+    """Return the path of the pretrained weights, downloading and unzipping them on first use
+    (release asset mod_brdgnet_ptrain.zip, ~1.9 GB, holding mod_brdgnet_ptrain.pth)."""
+    import zipfile
     path = Path(path)
     if path.exists():
         return path
+    zpath = path.with_suffix(".zip")
     try:
-        download(url, path, desc="pretrained LiNeMesh weights")
+        download(url, zpath, desc="pretrained LiNeMesh weights")
+        with zipfile.ZipFile(zpath) as z:
+            member = next(n for n in z.namelist() if n.endswith(".pth"))
+            print(f"Extracting {member} ...")
+            with z.open(member) as src, open(path, "wb") as dst:   # CRC-32 checked by zipfile
+                shutil.copyfileobj(src, dst, 1 << 20)
+        zpath.unlink()
     except Exception as e:
         raise SystemExit(
-            f"\nCould not download the pretrained weights ({e}).\n"
-            f"Download '{path.name}' manually from https://github.com/{GITHUB_REPO}/releases\n"
-            f"and place it at: {path}\n")
+            f"\nCould not obtain the pretrained weights ({e}).\n"
+            f"Download '{zpath.name}' from https://github.com/{GITHUB_REPO}/releases/tag/{WEIGHTS_TAG},\n"
+            f"unzip it and place '{path.name}' at: {path}\n")
     return path

@@ -56,10 +56,20 @@ random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
 weights = ensure_weights(args.weights) if args.weights == str(PRETRAINED_WEIGHTS) else args.weights
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 mod1 = group_occup_sdf().to(device)
-res = mod1.load_state_dict(torch.load(weights, map_location=device), strict=False)
-if res.missing_keys or res.unexpected_keys:
-    print("warning: weights do not match the model exactly:",
-          f"{len(res.missing_keys)} missing, {len(res.unexpected_keys)} unexpected keys")
+# The released checkpoint also stores auxiliary modules from development (e.g. an untrained
+# transformer in basenet.model2 and the linmod/occup_sdf sub-models); only the parameters of
+# the LiNeMesh network are loaded, and every one of them must be present with the right shape.
+ckpt = torch.load(weights, map_location=device)
+model_sd = mod1.state_dict()
+missing = [k for k in model_sd if k not in ckpt]
+bad = [k for k in model_sd if k in ckpt and tuple(ckpt[k].shape) != tuple(model_sd[k].shape)]
+if missing or bad:
+    raise SystemExit(f"weights do not match the network: {len(missing)} missing, {len(bad)} with a different shape "
+                     f"(e.g. {(missing + bad)[:3]})")
+mod1.load_state_dict({k: ckpt[k] for k in model_sd}, strict=True)
+print(f"loaded {len(model_sd)} parameter tensors from {weights} "
+      f"({len(ckpt) - len(model_sd)} auxiliary entries of the checkpoint not used)")
+del ckpt
 
 # ----------------------------------------------------------------------------- test domain
 available = list_domains(args.data)
@@ -82,7 +92,7 @@ nt = min(args.n_views, n_imgs)
 inp_idx = sorted(random.sample(range(n_imgs), nt))
 print(f"field images ({nt} of {n_imgs}, seed {args.seed}):", inp_idx)
 img_s = [cv2.imread(adirs + 'img_' + str(jj) + '.jpg') for jj in inp_idx]
-lnb = np.load(adirs + 'line_bars.npy').astype(np.float64)   # stored as float16; the coarse mesh is built in float64
+lnb = np.load(adirs + 'line_bars.npy').astype(np.float64)   # stored as float16; float64 gives exact element sizes
 gt_file = adirs + 'dense_pts.npy'
 xyz_gt = np.load(gt_file).astype(np.float64) if os.path.exists(gt_file) else None
 if xyz_gt is None:
